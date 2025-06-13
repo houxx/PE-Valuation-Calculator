@@ -64,21 +64,21 @@ class PECalculator:
             if cached_data:
                 data, info = cached_data[0]
                 update_time = self.cache_manager.get_data_update_time(ticker, 'stock_price', period=period)
-                with st.expander(f"✅ 使用缓存的股价数据 (更新时间: {update_time})", expanded=False):
-                    st.write("股价数据已从缓存加载，无需重新获取")
+                st.write(f"✅ 使用缓存的股价数据 (更新时间: {update_time})")
+                st.write("股价数据已从缓存加载，无需重新获取")
                 return data, info
         
         try:
-            with st.expander("🔄 正在获取最新股价数据...", expanded=False):
-                st.write("正在从Yahoo Finance获取股价数据...")
+            st.write("🔄 正在获取最新股价数据...")
+            st.write("正在从Yahoo Finance获取股价数据...")
             stock = yf.Ticker(ticker)
             data = stock.history(period=period)
             info = stock.info
             
             # 保存到缓存
             self.cache_manager.save_cache(ticker, 'stock_price', (data, info), period=period)
-            with st.expander("✅ 股价数据获取成功并已缓存", expanded=False):
-                st.write("股价数据已成功获取并保存到缓存")
+            st.write("✅ 股价数据获取成功并已缓存")
+            st.write("股价数据已成功获取并保存到缓存")
             
             return data, info
         except Exception as e:
@@ -93,13 +93,13 @@ class PECalculator:
             if cached_data:
                 eps_ttm = cached_data[0]
                 update_time = self.cache_manager.get_data_update_time(ticker, 'eps_data')
-                with st.expander(f"✅ 使用缓存的EPS数据 (更新时间: {update_time})", expanded=False):
-                    st.write("EPS数据已从缓存加载，无需重新获取")
+                st.write(f"✅ 使用缓存的EPS数据 (更新时间: {update_time})")
+                st.write("EPS数据已从缓存加载，无需重新获取")
                 return eps_ttm
         
         try:
-            with st.expander("🔄 正在获取最新EPS数据...", expanded=False):
-                st.write("正在从Yahoo Finance获取EPS数据...")
+            st.write("🔄 正在获取最新EPS数据...")
+            st.write("正在从Yahoo Finance获取EPS数据...")
             stock = yf.Ticker(ticker)
             info = stock.info
             eps_ttm = info.get('trailingEps', None)
@@ -115,8 +115,8 @@ class PECalculator:
             # 保存到缓存
             if eps_ttm and eps_ttm > 0:
                 self.cache_manager.save_cache(ticker, 'eps_data', eps_ttm)
-                with st.expander("✅ EPS数据获取成功并已缓存", expanded=False):
-                    st.write("EPS数据已成功获取并保存到缓存")
+                st.write("✅ 股价数据获取成功并已缓存")
+                st.write("股价数据已成功获取并保存到缓存")
             
             return eps_ttm
         except Exception as e:
@@ -162,7 +162,7 @@ class PECalculator:
         st.info("💡 提示：由于网站反爬虫限制，请手动输入EPS预测数据")
         return {}
     
-    def get_industry_pe_data(self, ticker, force_refresh=False):
+    def get_industry_pe_data(self, ticker, force_refresh=False, api_key=None):
         """获取行业平均PE数据"""
         # 检查缓存
         if not force_refresh:
@@ -170,8 +170,8 @@ class PECalculator:
             if cached_data:
                 industry_data = cached_data[0]
                 update_time = self.cache_manager.get_data_update_time(ticker, 'industry_data')
-                with st.expander(f"✅ 使用缓存的行业数据 (更新时间: {update_time})", expanded=False):
-                    st.write("行业数据已从缓存加载，无需重新获取")
+                st.write(f"✅ 使用缓存的行业数据 (更新时间: {update_time})")
+                st.write("行业数据已从缓存加载，无需重新获取")
                 return industry_data
         
         industry_data = {
@@ -182,8 +182,8 @@ class PECalculator:
         }
         
         try:
-            with st.expander("🔄 正在获取最新行业数据...", expanded=False):
-                st.write("正在从Yahoo Finance获取行业信息...")
+            st.write("🔄 正在获取最新行业数据...")
+            st.write("正在从Yahoo Finance获取行业信息...")
             # 方法1: 从yfinance获取行业信息
             stock = yf.Ticker(ticker)
             info = stock.info
@@ -194,45 +194,121 @@ class PECalculator:
             industry_data['industry_name'] = industry
             industry_data['sector_name'] = sector
             
-            with st.expander(f"🏭 检测到行业: {industry} | 板块: {sector}", expanded=False):
-                st.write(f"行业分类: {industry}")
-                st.write(f"板块分类: {sector}")
+            st.write(f"🏭 检测到行业: {industry} | 板块: {sector}")
+            st.write(f"行业分类: {industry}")
+            st.write(f"板块分类: {sector}")
             
-            # 方法2: 使用预设的行业平均PE数据（主要方案）
-            industry_pe_defaults = {
-                'Technology': 25.0,
-                'Healthcare': 22.0,
-                'Financial Services': 12.0,
-                'Consumer Cyclical': 18.0,
-                'Consumer Defensive': 20.0,
-                'Industrials': 16.0,
-                'Energy': 14.0,
-                'Utilities': 18.0,
-                'Real Estate': 20.0,
-                'Materials': 15.0,
-                'Communication Services': 20.0
-            }
+            # 方法2: 尝试从Financial Modeling Prep API获取行业和板块PE数据
+            fmp_api_key = api_key or st.session_state.get('fmp_api_key', None)
+            industry_pe = None
+            sector_pe = None
             
-            if sector in industry_pe_defaults:
-                industry_data['industry_pe'] = industry_pe_defaults[sector]
-                industry_data['sector_pe'] = industry_pe_defaults[sector]
-                with st.expander(f"✅ 获取到行业平均PE: {industry_pe_defaults[sector]} (基于{sector}板块历史数据)", expanded=False):
-                    st.write(f"行业平均PE: {industry_pe_defaults[sector]}")
-                    st.write(f"数据来源: {sector}板块历史数据")
+            if fmp_api_key:
+                try:
+                    st.write("🔄 正在从Financial Modeling Prep获取实时行业PE数据...")
+                    st.write("正在请求行业PE数据...")
+                    
+                    # 获取行业PE数据
+                    industry_pe_url = f"https://financialmodelingprep.com/api/v4/industry_price_earning_ratio?apikey={fmp_api_key}"
+                    industry_response = requests.get(industry_pe_url, timeout=10)
+                    
+                    if industry_response.status_code == 200:
+                        industry_data_list = industry_response.json()
+                        if industry_data_list and isinstance(industry_data_list, list):
+                            # 查找匹配的行业
+                            for item in industry_data_list:
+                                if item.get('industry', '').lower() == industry.lower():
+                                    industry_pe = item.get('pe', None)
+                                    break
+                            
+                            if industry_pe is not None:
+                                st.write(f"✅ 获取到实时行业PE数据")
+                                st.write(f"行业: {industry}")
+                                st.write(f"PE比率: {industry_pe}")
+                                st.write("数据来源: Financial Modeling Prep API")
+                            else:
+                                st.write(f"⚠️ 未找到匹配的行业PE数据")
+                                st.write(f"行业: {industry}")
+                                st.write("未在API返回结果中找到匹配的行业数据")
+                    else:
+                        st.write(f"⚠️ 行业PE数据API请求失败")
+                        st.write(f"状态码: {industry_response.status_code}")
+                        st.write("将使用预设数据作为备用方案")
+                    
+                    # 获取板块PE数据
+                    st.write("🔄 正在从Financial Modeling Prep获取实时板块PE数据...")
+                    st.write("正在请求板块PE数据...")
+                    
+                    sector_pe_url = f"https://financialmodelingprep.com/api/v4/sector_price_earning_ratio?apikey={fmp_api_key}"
+                    sector_response = requests.get(sector_pe_url, timeout=10)
+                    
+                    if sector_response.status_code == 200:
+                        sector_data_list = sector_response.json()
+                        if sector_data_list and isinstance(sector_data_list, list):
+                            # 查找匹配的板块
+                            for item in sector_data_list:
+                                if item.get('sector', '').lower() == sector.lower():
+                                    sector_pe = item.get('pe', None)
+                                    break
+                            
+                            if sector_pe is not None:
+                                st.write(f"✅ 获取到实时板块PE数据")
+                                st.write(f"板块: {sector}")
+                                st.write(f"PE比率: {sector_pe}")
+                                st.write("数据来源: Financial Modeling Prep API")
+                            else:
+                                st.write(f"⚠️ 未找到匹配的板块PE数据")
+                                st.write(f"板块: {sector}")
+                                st.write("未在API返回结果中找到匹配的板块数据")
+                    else:
+                        st.write(f"⚠️ 板块PE数据API请求失败")
+                        st.write(f"状态码: {sector_response.status_code}")
+                        st.write("将使用预设数据作为备用方案")
+                        
+                except Exception as e:
+                    st.write(f"⚠️ Financial Modeling Prep API请求异常")
+                    st.write(f"错误信息: {str(e)}")
+                    st.write("将使用预设数据作为备用方案")
             else:
-                industry_data['industry_pe'] = 18.0  # 市场平均PE
-                industry_data['sector_pe'] = 18.0
-                with st.expander(f"💡 使用市场平均PE: 18.0 (未找到{sector}板块的预设数据)", expanded=False):
-                    st.write("使用市场平均PE: 18.0")
-                    st.write(f"原因: 未找到{sector}板块的预设数据")
+                st.write("ℹ️ 未使用Financial Modeling Prep API")
+                st.write("原因: 未提供API密钥")
+                st.write("将使用预设数据作为备用方案")
             
-            # 设置市场平均PE
-            industry_data['market_pe'] = 18.0  # S&P 500历史平均PE
+            # 如果API获取成功，使用API数据；否则使用None表示无数据
+            if industry_pe is not None:
+                industry_data['industry_pe'] = industry_pe
+                st.write(f"✅ 使用实时行业PE数据: {industry_pe}")
+                st.write(f"行业: {industry}")
+                st.write(f"PE比率: {industry_pe}")
+                st.write("数据来源: Financial Modeling Prep API")
+            else:
+                industry_data['industry_pe'] = None
+                st.write(f"⚠️ 无法获取行业PE数据")
+                st.write(f"行业: {industry}")
+                st.write("未能获取PE比率数据")
+                st.write(f"原因: 未找到{industry}行业的PE数据或未提供API密钥")
+            
+            # 设置板块PE
+            if sector_pe is not None:
+                industry_data['sector_pe'] = sector_pe
+                st.write(f"✅ 使用实时板块PE数据: {sector_pe}")
+                st.write(f"板块: {sector}")
+                st.write(f"PE比率: {sector_pe}")
+                st.write("数据来源: Financial Modeling Prep API")
+            else:
+                industry_data['sector_pe'] = None
+                st.write(f"⚠️ 无法获取板块PE数据")
+                st.write(f"板块: {sector}")
+                st.write("未能获取PE比率数据")
+                st.write(f"原因: 未找到{sector}板块的PE数据或未提供API密钥")
+            
+            # 设置市场平均PE - 不使用预设值
+            industry_data['market_pe'] = None
             
             # 保存到缓存
             self.cache_manager.save_cache(ticker, 'industry_data', industry_data)
-            with st.expander("✅ 行业数据获取成功并已缓存", expanded=False):
-                st.write("行业数据已成功获取并保存到缓存")
+            st.write("✅ 行业数据获取成功并已缓存")
+            st.write("行业数据已成功获取并保存到缓存")
             
         except Exception as e:
             st.error(f"获取行业数据失败: {e}")
@@ -240,9 +316,9 @@ class PECalculator:
             industry_data = {
                 'industry_name': 'Unknown',
                 'sector_name': 'Unknown',
-                'industry_pe': 18.0,
-                'sector_pe': 18.0,
-                'market_pe': 18.0
+                'industry_pe': None,
+                'sector_pe': None,
+                'market_pe': None
             }
         
         return industry_data
@@ -488,6 +564,20 @@ def main():
     # 初始化计算器
     calculator = PECalculator()
     
+    # API密钥设置
+    st.sidebar.markdown("---")
+    st.sidebar.write("🔑 API设置")
+    st.sidebar.write("设置Financial Modeling Prep API密钥以获取实时行业PE数据")
+    fmp_api_key = st.sidebar.text_input(
+        "Financial Modeling Prep API密钥", 
+        value=st.session_state.get('fmp_api_key', ''),
+        type="password",
+        help="获取免费API密钥: https://site.financialmodelingprep.com/developer/docs/"
+    )
+    if fmp_api_key:
+        st.session_state['fmp_api_key'] = fmp_api_key
+        st.sidebar.success("✅ API密钥已保存")
+    
     # 数据刷新选项
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔄 数据更新")
@@ -531,7 +621,8 @@ def main():
                 return
             
             # 获取行业平均PE数据
-            industry_data = calculator.get_industry_pe_data(ticker.upper(), force_refresh=force_refresh)
+            fmp_api_key = st.session_state.get('fmp_api_key', None)
+            industry_data = calculator.get_industry_pe_data(ticker.upper(), force_refresh=force_refresh, api_key=fmp_api_key)
             
             # 存储到session state
             st.session_state.price_data = price_data
@@ -605,15 +696,18 @@ def main():
             )
         
         with col3:
-            market_pe = industry_data.get('market_pe', 18.0)
-            market_diff = current_pe - market_pe
-            delta_color = "normal" if abs(market_diff) < 3 else ("inverse" if market_diff > 0 else "normal")
-            st.metric(
-                "市场平均PE", 
-                f"{market_pe:.2f}", 
-                delta=f"{market_diff:+.2f}",
-                delta_color=delta_color
-            )
+            market_pe = industry_data.get('market_pe')
+            if market_pe is not None:
+                market_diff = current_pe - market_pe
+                delta_color = "normal" if abs(market_diff) < 3 else ("inverse" if market_diff > 0 else "normal")
+                st.metric(
+                    "市场平均PE", 
+                    f"{market_pe:.2f}", 
+                    delta=f"{market_diff:+.2f}",
+                    delta_color=delta_color
+                )
+            else:
+                st.metric("市场平均PE", "N/A")
         
         with col4:
             # PE相对估值
