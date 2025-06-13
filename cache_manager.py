@@ -15,7 +15,6 @@ class CacheManager:
         self.cache_expiry = {
             'stock_price': timedelta(days=1),      # 股价数据：1天
             'eps_data': timedelta(weeks=1),        # EPS数据：1周
-            'industry_pe': timedelta(weeks=1),     # 行业PE：1周
             'calculated_results': timedelta(days=1) # 计算结果：1天
         }
         
@@ -265,3 +264,22 @@ class CacheManager:
     def get_cache_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息"""
         return self.get_cache_info()
+        
+    def cleanup_cache(self) -> int:
+        """清理过期缓存，返回清理的文件数量"""
+        cleanup_stats = self.cleanup_old_cache()
+        return cleanup_stats['expired_removed'] + cleanup_stats['unused_removed']
+    
+    def clear_all_cache(self) -> int:
+        """清理所有缓存文件，返回清理的文件数量"""
+        if not os.path.exists(self.cache_dir):
+            return 0
+            
+        removed_count = 0
+        for filename in os.listdir(self.cache_dir):
+            file_path = os.path.join(self.cache_dir, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                removed_count += 1
+                
+        return removed_count
