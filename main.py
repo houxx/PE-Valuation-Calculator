@@ -15,6 +15,30 @@ import os
 from cache_manager import CacheManager
 warnings.filterwarnings('ignore')
 
+# 初始化API调用计数器
+if 'api_call_count' not in st.session_state:
+    st.session_state.api_call_count = 0
+    st.session_state.api_call_date = datetime.now().date()
+    st.session_state.rate_limited = False  # 添加速率限制标志
+
+# API调用计数函数
+def increment_api_call_count():
+    # 检查是否需要重置计数（新的一天）
+    today = datetime.now().date()
+    if 'api_call_date' not in st.session_state or st.session_state.api_call_date != today:
+        st.session_state.api_call_count = 0
+        st.session_state.api_call_date = today
+        st.session_state.rate_limited = False  # 重置速率限制标志
+    
+    # 增加计数
+    st.session_state.api_call_count += 1
+    
+    # 检查是否达到速率限制（例如，每天超过50次调用）
+    if st.session_state.api_call_count > 50:
+        st.session_state.rate_limited = True
+    
+    return st.session_state.api_call_count
+
 # 页面配置
 st.set_page_config(
     page_title="PE估值计算器",
@@ -68,14 +92,25 @@ class PECalculator:
         
         # 获取股票数据
         try:
+            # 检查是否已达到API调用限制
+            if 'rate_limited' in st.session_state and st.session_state.rate_limited:
+                st.error("已达到API调用限制，请稍后再试或使用缓存数据")
+                return None
+                
             stock = yf.Ticker(ticker)
-            stock_data = stock.history(period="5y")
+            increment_api_call_count()  # 增加API调用计数
+            stock_data = stock.history(period="1y")
             
             # 保存到缓存
             self.cache_manager.save_cache(ticker, 'stock_data', stock_data)
             
             return stock_data
         except Exception as e:
+            # 如果错误信息包含速率限制相关内容，设置速率限制标志
+            error_msg = str(e).lower()
+            if "rate limit" in error_msg or "too many requests" in error_msg:
+                st.session_state.rate_limited = True
+            
             st.error(f"获取股票数据失败: {e}")
             return None
     
@@ -91,7 +126,13 @@ class PECalculator:
         
         # 获取EPS数据
         try:
+            # 检查是否已达到API调用限制
+            if 'rate_limited' in st.session_state and st.session_state.rate_limited:
+                st.error("已达到API调用限制，请稍后再试或使用缓存数据")
+                return None
+                
             stock = yf.Ticker(ticker)
+            increment_api_call_count()  # 增加API调用计数
             info = stock.info
             eps_ttm = info.get('trailingEps', None)
             
@@ -100,6 +141,11 @@ class PECalculator:
             
             return eps_ttm
         except Exception as e:
+            # 如果错误信息包含速率限制相关内容，设置速率限制标志
+            error_msg = str(e).lower()
+            if "rate limit" in error_msg or "too many requests" in error_msg:
+                st.session_state.rate_limited = True
+            
             st.error(f"获取EPS数据失败: {e}")
             return None
     
@@ -152,9 +198,17 @@ class PECalculator:
                 return forward_eps
         
         try:
-            # 获取股票信息
-            stock = yf.Ticker(ticker)
-            info = stock.info
+            # 检查缓存中是否有股票信息
+            cached_info = self.cache_manager.load_cache(ticker, 'stock_info')
+            if cached_info and not force_refresh:
+                info = cached_info[0]
+            else:
+                # 获取股票信息
+                stock = yf.Ticker(ticker)
+                increment_api_call_count()  # 增加API调用计数
+                info = stock.info
+                # 保存到缓存
+                self.cache_manager.save_cache(ticker, 'stock_info', info)
             
             # 获取当前日期
             current_date = datetime.now()
@@ -264,28 +318,57 @@ def create_valuation_chart(valuation_results):
         x=years,
         y=upper_values,
         name='估值上限',
-        marker_color='lightcoral',
-        opacity=0.7
+        marker_color='#F4BB40',  # 修改为橙色
+        opacity=0.7,
+        width=0.4  # 减小柱子宽度
     ))
     
     fig.add_trace(go.Bar(
         x=years,
         y=lower_values,
         name='估值下限',
-        marker_color='lightblue',
-        opacity=0.7
+        marker_color='#2CCB7B',  # 修改为绿色
+        opacity=0.7,
+        width=0.4  # 减小柱子宽度
     ))
     
-    # 添加中位值散点
+    # 添加中位值线
     fig.add_trace(go.Scatter(
         x=years,
         y=median_values,
-        mode='markers+text',
+        mode='lines+text',
         name='中位估值',
-        marker=dict(color='red', size=10),
+        line=dict(color='white', width=3),
         text=[f'${val:.2f}' for val in median_values],
-        textposition='top center'
+        textposition='top center',
+        textfont=dict(family='DIN', size=28, color='white')  # 修改为白色，字体大小缩小一倍
     ))
+    
+    # 添加标签
+    for i, year in enumerate(years):
+        # 添加上限标签
+        fig.add_annotation(
+            x=year,
+            y=upper_values[i],
+            text=f'${upper_values[i]:.2f}',
+            showarrow=False,
+            font=dict(family='DIN', size=21, color='#E8AB29'),  # 使用与柱子相同的颜色，字体大小缩小一倍
+            yshift=0,
+            xshift=120,  # 增加右移距离，确保数字完全移出柱状图
+            xanchor='left'  # 改为左对齐，使数字位于柱子右侧
+        )
+        
+        # 添加下限标签
+        fig.add_annotation(
+            x=year,
+            y=lower_values[i],
+            text=f'${lower_values[i]:.2f}',
+            showarrow=False,
+            font=dict(family='DIN', size=21, color='#2CCB7B'),  # 使用与柱子相同的颜色，字体大小缩小一倍
+            yshift=0,
+            xshift=120,  # 增加右移距离，确保数字完全移出柱状图
+            xanchor='left'  # 改为左对齐，使数字位于柱子右侧
+        )
     
     fig.update_layout(
         title='前瞻估值分析',
@@ -293,6 +376,7 @@ def create_valuation_chart(valuation_results):
         yaxis_title='股价 (USD)',
         barmode='overlay',
         height=500,
+        width=800,  # 设置固定宽度以与上面的文字保持一致
         showlegend=True
     )
     
@@ -309,31 +393,58 @@ def create_pe_trend_chart(price_data, eps):
     if pe_values.empty:
         return None
     
+    # 计算PE统计值
+    pe_mean = pe_values.mean()
+    pe_std = pe_values.std()
+    pe_lower = max(0, pe_mean - pe_std)
+    pe_upper = pe_mean + pe_std
+    current_pe = pe_values.iloc[-1]
+    
     fig = go.Figure()
     
+    # 添加PE趋势线
     fig.add_trace(go.Scatter(
         x=pe_values.index,
         y=pe_values.values,
         mode='lines',
         name='每日PE',
-        line=dict(color='blue', width=2)
+        line=dict(color='#4285F4', width=2)
     ))
     
     # 添加均值线
-    pe_mean = pe_values.mean()
-    fig.add_hline(y=pe_mean, line_dash="dash", line_color="red", 
-                  annotation_text=f"均值: {pe_mean:.2f}")
+    fig.add_hline(y=pe_mean, line_dash='dash', line_color='#F4BB40', 
+                  annotation=dict(
+                      text=f'均值: {pe_mean:.2f}',
+                      font=dict(size=17),
+                      align='right',
+                      xshift=90,  # 增加右侧偏移量，移到红框标记的位置
+                      yshift=0
+                  ))
+    
+
+
+    # 添加当前PE标记
+    fig.add_trace(go.Scatter(
+        x=[pe_values.index[-1]],
+        y=[current_pe],
+        mode='markers+text',
+        marker=dict(color='#66BED9', size=10),
+        text=f'当前PE: {current_pe:.2f}',
+        textposition='top center',
+        name='当前PE'
+    ))
     
     fig.update_layout(
         title='PE趋势分析（过去12个月）',
         xaxis_title='日期',
         yaxis_title='PE倍数',
         height=400,
+        width=800,  # 设置固定宽度以与上面的文字保持一致
         xaxis=dict(
             tickformat='%Y年 %m月',  # 按年月格式化日期
             tickmode='auto',
             nticks=12,  # 大约显示12个刻度（每月一个）
-            tickangle=-45,  # 倾斜角度，使标签更易读
+            tickangle=-30,  # 倾斜角度，使标签更易读
             showgrid=True
         )
     )
@@ -341,7 +452,24 @@ def create_pe_trend_chart(price_data, eps):
     return fig
 
 def main():
+    # 在右上角显示API调用计数和速率限制状态
+    rate_limited_status = "⚠️ 已限制" if 'rate_limited' in st.session_state and st.session_state.rate_limited else ""
+    rate_limited_color = "color: red;" if 'rate_limited' in st.session_state and st.session_state.rate_limited else ""
+    
+    st.markdown(
+        f"<div style='position: absolute; top: 0.5rem; right: 1rem; z-index: 1000; font-size: 0.8rem; {rate_limited_color}'>API调用次数: {st.session_state.api_call_count} {rate_limited_status}</div>",
+        unsafe_allow_html=True
+    )
+    
     st.markdown("<h1 class='main-header'>PE估值计算器</h1>", unsafe_allow_html=True)
+    
+    # 初始化计算器
+    calculator = PECalculator()
+    
+    # 自动清理过期缓存
+    cleaned = calculator.cache_manager.cleanup_cache()
+    if cleaned > 0:
+        st.sidebar.info(f"已自动清理 {cleaned} 个过期缓存文件")
     
     # 侧边栏设置
     st.sidebar.title("⚙️ 设置")
@@ -376,12 +504,9 @@ def main():
     st.sidebar.subheader("🔄 数据刷新选项")
     force_refresh = st.sidebar.checkbox("强制刷新数据（不使用缓存）")
     
-    # 初始化计算器
-    calculator = PECalculator()
-    
     # 缓存管理
     st.sidebar.markdown("---")
-    st.sidebar.subheader("💾 缓存管理")
+    st.sidebar.subheader("💾 缓存管理 (手动模式)")
     
     # 显示缓存统计
     cache_stats = calculator.cache_manager.get_cache_stats()
@@ -389,14 +514,31 @@ def main():
     st.sidebar.write(f"缓存大小: {cache_stats['total_size_mb']:.2f} MB")
     
     # 清理缓存按钮
-    if st.sidebar.button("🗑️ 清理过期缓存"):
+    if st.sidebar.button("🗑️ 清理损坏的缓存文件"):
         cleaned = calculator.cache_manager.cleanup_cache()
-        st.sidebar.success(f"已清理 {cleaned} 个过期缓存文件")
+        st.sidebar.success(f"已清理 {cleaned} 个损坏的缓存文件")
         st.rerun()
     
     if st.sidebar.button("🗑️ 清理所有缓存"):
-        calculator.cache_manager.clear_all_cache()
-        st.sidebar.success("已清理所有缓存文件")
+        cleaned = calculator.cache_manager.clear_all_cache()
+        st.sidebar.success(f"已清理 {cleaned} 个缓存文件")
+        st.rerun()
+        
+    # 速率限制管理
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🚦 API限制管理")
+    
+    # 显示当前API调用状态
+    rate_limited = 'rate_limited' in st.session_state and st.session_state.rate_limited
+    status_color = "🔴" if rate_limited else "🟢"
+    status_text = "已限制" if rate_limited else "正常"
+    st.sidebar.write(f"API状态: {status_color} {status_text}")
+    st.sidebar.write(f"今日调用次数: {st.session_state.api_call_count}")
+    
+    # 重置API限制按钮
+    if rate_limited and st.sidebar.button("🔄 重置API限制"):
+        st.session_state.rate_limited = False
+        st.sidebar.success("已重置API限制状态")
         st.rerun()
     
     # 获取数据按钮
@@ -412,12 +554,21 @@ def main():
             # 获取股票信息
             try:
                 # 检查缓存中是否有股票信息
-                if 'stock_info' not in st.session_state or force_refresh:
-                    stock = yf.Ticker(ticker.upper())
-                    stock_info = stock.info
-                    st.session_state.stock_info = stock_info
+                cached_info = calculator.cache_manager.load_cache(ticker.upper(), 'stock_info')
+                if cached_info and not force_refresh:
+                    stock_info = cached_info[0]
                 else:
-                    stock_info = st.session_state.stock_info
+                    # 检查是否已达到API调用限制
+                    if 'rate_limited' in st.session_state and st.session_state.rate_limited:
+                        st.error("已达到API调用限制，请稍后再试或使用缓存数据")
+                        return
+                        
+                    stock = yf.Ticker(ticker.upper())
+                    increment_api_call_count()  # 增加API调用计数
+                    stock_info = stock.info
+                    # 保存到缓存
+                    calculator.cache_manager.save_cache(ticker.upper(), 'stock_info', stock_info)
+                st.session_state.stock_info = stock_info
             except Exception as e:
                 st.error(f"获取股票信息失败: {e}")
                 return
@@ -448,8 +599,21 @@ def main():
             
             # 获取股票信息
             try:
-                stock = yf.Ticker(ticker.upper())
-                stock_info = stock.info
+                # 检查缓存中是否有股票信息
+                cached_info = calculator.cache_manager.load_cache(ticker.upper(), 'stock_info')
+                if cached_info and not force_refresh:
+                    stock_info = cached_info[0]
+                else:
+                    # 检查是否已达到API调用限制
+                    if 'rate_limited' in st.session_state and st.session_state.rate_limited:
+                        st.error("已达到API调用限制，请稍后再试或使用缓存数据")
+                        return
+                        
+                    stock = yf.Ticker(ticker.upper())
+                    increment_api_call_count()  # 增加API调用计数
+                    stock_info = stock.info
+                    # 保存到缓存
+                    calculator.cache_manager.save_cache(ticker.upper(), 'stock_info', stock_info)
                 st.session_state.stock_info = stock_info
             except Exception as e:
                 st.error(f"获取股票信息失败: {e}")
@@ -655,11 +819,6 @@ def main():
         
         valuation_results = st.session_state.valuation_results
         
-        # 估值图表
-        valuation_chart = create_valuation_chart(valuation_results)
-        if valuation_chart:
-            st.plotly_chart(valuation_chart, use_container_width=True)
-        
         # 估值表格
         st.subheader("📋 估值详情")
         
@@ -676,6 +835,11 @@ def main():
         ])
         
         st.dataframe(df_display, use_container_width=True)
+        
+        # 估值图表
+        valuation_chart = create_valuation_chart(valuation_results)
+        if valuation_chart:
+            st.plotly_chart(valuation_chart, use_container_width=True)
         
         # 估值总结模块已移除
         

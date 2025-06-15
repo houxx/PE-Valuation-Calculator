@@ -66,7 +66,7 @@ class CacheManager:
         return cache_key
     
     def load_cache(self, ticker: str, data_type: str, **kwargs) -> Optional[tuple]:
-        """从缓存加载数据"""
+        """从缓存加载数据（已移除自动过期检查）"""
         cache_key = self._get_cache_key(ticker, data_type, **kwargs)
         cache_path = self._get_cache_path(cache_key)
         meta_path = self._get_metadata_path(cache_key)
@@ -81,11 +81,7 @@ class CacheManager:
         except:
             return None
         
-        # 检查缓存是否过期
-        created_at = datetime.fromisoformat(metadata['created_at'])
-        if self._is_cache_expired(data_type, created_at):
-            return None
-        
+        # 不再自动检查缓存是否过期，改为手动管理
         # 更新最后访问时间
         metadata['last_accessed'] = datetime.now().isoformat()
         with open(meta_path, 'w', encoding='utf-8') as f:
@@ -125,10 +121,9 @@ class CacheManager:
         return deleted
     
     def cleanup_old_cache(self) -> Dict[str, int]:
-        """清理过期和长期未使用的缓存"""
+        """手动清理缓存（已移除自动过期检查）"""
         cleanup_stats = {
-            'expired_removed': 0,
-            'unused_removed': 0,
+            'manually_removed': 0,
             'total_files': 0
         }
         
@@ -144,29 +139,13 @@ class CacheManager:
                 cleanup_stats['total_files'] += 1
                 
                 try:
+                    # 只处理元数据文件损坏的情况
                     with open(meta_path, 'r', encoding='utf-8') as f:
                         metadata = json.load(f)
-                    
-                    created_at = datetime.fromisoformat(metadata['created_at'])
-                    last_accessed = datetime.fromisoformat(metadata['last_accessed'])
-                    data_type = metadata.get('data_type', 'unknown')
-                    
-                    # 检查是否过期
-                    if self._is_cache_expired(data_type, created_at):
-                        self._remove_cache_files(cache_path, meta_path)
-                        cleanup_stats['expired_removed'] += 1
-                        continue
-                    
-                    # 检查是否长期未使用
-                    if datetime.now() - last_accessed > self.unused_expiry:
-                        self._remove_cache_files(cache_path, meta_path)
-                        cleanup_stats['unused_removed'] += 1
-                        continue
-                        
                 except Exception as e:
                     # 如果元数据文件损坏，删除相关文件
                     self._remove_cache_files(cache_path, meta_path)
-                    cleanup_stats['expired_removed'] += 1
+                    cleanup_stats['manually_removed'] += 1
         
         return cleanup_stats
     
@@ -266,9 +245,9 @@ class CacheManager:
         return self.get_cache_info()
         
     def cleanup_cache(self) -> int:
-        """清理过期缓存，返回清理的文件数量"""
+        """手动清理缓存，返回清理的文件数量"""
         cleanup_stats = self.cleanup_old_cache()
-        return cleanup_stats['expired_removed'] + cleanup_stats['unused_removed']
+        return cleanup_stats['manually_removed']
     
     def clear_all_cache(self) -> int:
         """清理所有缓存文件，返回清理的文件数量"""
