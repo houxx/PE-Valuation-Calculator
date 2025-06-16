@@ -17,9 +17,16 @@ warnings.filterwarnings('ignore')
 
 # 初始化API调用计数器
 if 'api_call_count' not in st.session_state:
-    st.session_state.api_call_count = 0
-    st.session_state.api_call_date = datetime.now().date()
-    st.session_state.rate_limited = False  # 添加速率限制标志
+    # 不再直接重置为0，而是检查是否需要按日期重置
+    today = datetime.now().date()
+    if 'api_call_date' in st.session_state and st.session_state.api_call_date == today:
+        # 如果是同一天，保持计数器不变
+        pass
+    else:
+        # 如果是新的一天或首次运行，重置计数器
+        st.session_state.api_call_count = 0
+        st.session_state.api_call_date = today
+        st.session_state.rate_limited = False  # 重置速率限制标志
 
 # API调用计数函数
 def increment_api_call_count():
@@ -73,7 +80,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-class PECalculator:
+class 滚动PECalculator:
     def __init__(self):
         self.ticker = None
         self.stock_data = None
@@ -150,11 +157,11 @@ class PECalculator:
             return None
     
     def calculate_pe_range(self, price_data, eps):
-        """计算PE区间"""
+        """计算滚动PE区间"""
         if eps is None or eps <= 0:
             return None
         
-        pe_values = price_data['Close'] / eps
+        pe_values = price_data['Close'] / eps  # 计算滚动PE值
         pe_values = pe_values.dropna()
         
         if pe_values.empty:
@@ -213,16 +220,41 @@ class PECalculator:
             # 获取当前日期
             current_date = datetime.now()
             
-            # 尝试获取公司的最后财年结束日期
+            # 尝试获取公司的最新财报日期和财年
             try:
-                if 'lastFiscalYearEnd' in info:
-                    # lastFiscalYearEnd是Unix时间戳，需要转换
+                # 首先尝试获取最新财报日期
+                if 'earningsDate' in info and info['earningsDate'] is not None:
+                    # earningsDate是Unix时间戳，需要转换
+                    earnings_date = datetime.fromtimestamp(info['earningsDate'])
+                    # 使用最新财报发布日期的年份作为当前财年
+                    current_fiscal_year = earnings_date.year
+                # 如果没有earningsDate，尝试使用nextEarningsDate
+                elif 'nextEarningsDate' in info and info['nextEarningsDate'] is not None:
+                    # 下一次财报日期可能是字符串格式，需要转换
+                    try:
+                        next_earnings_date = datetime.strptime(info['nextEarningsDate'], '%Y-%m-%d')
+                        # 使用下一次财报日期的年份作为当前财年
+                        current_fiscal_year = next_earnings_date.year
+                    except:
+                        # 如果转换失败，回退到lastFiscalYearEnd逻辑
+                        if 'lastFiscalYearEnd' in info:
+                            last_fiscal_year_end = datetime.fromtimestamp(info['lastFiscalYearEnd'])
+                            fiscal_year = last_fiscal_year_end.year
+                            
+                            # 计算当前财年
+                            current_fiscal_year = fiscal_year
+                            if current_date.month > last_fiscal_year_end.month or \
+                               (current_date.month == last_fiscal_year_end.month and current_date.day > last_fiscal_year_end.day):
+                                current_fiscal_year += 1
+                        else:
+                            # 如果无法获取财年信息，则使用当前日历年
+                            current_fiscal_year = current_date.year
+                # 如果没有财报日期信息，回退到lastFiscalYearEnd逻辑
+                elif 'lastFiscalYearEnd' in info:
                     last_fiscal_year_end = datetime.fromtimestamp(info['lastFiscalYearEnd'])
-                    # 获取财年年份（通常以结束年份命名）
                     fiscal_year = last_fiscal_year_end.year
                     
-                    # 计算当前财年、下一财年
-                    # 如果当前日期已经过了上一个财年结束日期的同一天，则当前财年为fiscal_year+1
+                    # 计算当前财年
                     current_fiscal_year = fiscal_year
                     if current_date.month > last_fiscal_year_end.month or \
                        (current_date.month == last_fiscal_year_end.month and current_date.day > last_fiscal_year_end.day):
@@ -311,11 +343,22 @@ def create_valuation_chart(valuation_results):
     upper_values = [result['valuation_upper'] for result in valuation_results]
     median_values = [result['valuation_median'] for result in valuation_results]
     
+    # 创建数值索引作为x轴位置
+    x_positions = list(range(len(years)))
+    
+    # 创建适当的财年标签
+    if len(years) == 1:
+        fiscal_labels = ["当前财年"]
+    elif len(years) == 2:
+        fiscal_labels = ["当前财年", "下一财年"]
+    else:
+        fiscal_labels = [f"财年{i+1}" for i in range(len(years))]
+    
     fig = go.Figure()
     
     # 添加估值区间柱状图
     fig.add_trace(go.Bar(
-        x=years,
+        x=x_positions,  # 使用数值索引而不是year字符串
         y=upper_values,
         name='估值上限',
         marker_color='#F4BB40',  # 修改为橙色
@@ -324,7 +367,7 @@ def create_valuation_chart(valuation_results):
     ))
     
     fig.add_trace(go.Bar(
-        x=years,
+        x=x_positions,  # 使用数值索引而不是year字符串
         y=lower_values,
         name='估值下限',
         marker_color='#2CCB7B',  # 修改为绿色
@@ -332,47 +375,70 @@ def create_valuation_chart(valuation_results):
         width=0.4  # 减小柱子宽度
     ))
     
-    # 添加中位值线
-    fig.add_trace(go.Scatter(
-        x=years,
-        y=median_values,
-        mode='lines+text',
-        name='中位估值',
-        line=dict(color='white', width=3),
-        text=[f'${val:.2f}' for val in median_values],
-        textposition='top center',
-        textfont=dict(family='DIN', size=28, color='white')  # 修改为白色，字体大小缩小一倍
-    ))
+    # 添加中位值线 - 修改为每个柱状图上的独立横线
+    for i, year in enumerate(years):
+        # 添加中位值横线
+        # 使用索引i作为数值位置，而不是尝试转换year字符串
+        x_position = i  # 使用索引作为x轴位置
+        # 计算横线的起点和终点，使其宽度与柱状图相似
+        x_offset = 0.2  # 修改为0.2，使横线宽度与柱状图宽度一致
+        fig.add_shape(
+            type="line",
+            x0=x_position - x_offset,  # 左侧起点
+            y0=median_values[i],
+            x1=x_position + x_offset,  # 右侧终点
+            y1=median_values[i],
+            line=dict(color="white", width=3),
+        )
+        
+        # 添加中位值文本
+        fig.add_annotation(
+            x=x_position,  # 使用索引位置而不是year字符串
+            y=median_values[i],
+            text=f'${median_values[i]:.2f}',
+            showarrow=False,
+            font=dict(family='DIN', size=32, color='white', weight='bold'),  # 增大字体并加粗
+            yshift=25,  # 向上移动文字
+            xshift=0
+        )
     
     # 添加标签
     for i, year in enumerate(years):
+        # 使用索引i作为x轴位置
+        x_position = i
         # 添加上限标签
         fig.add_annotation(
-            x=year,
+            x=x_position,  # 使用索引位置而不是year字符串
             y=upper_values[i],
             text=f'${upper_values[i]:.2f}',
             showarrow=False,
             font=dict(family='DIN', size=21, color='#E8AB29'),  # 使用与柱子相同的颜色，字体大小缩小一倍
-            yshift=0,
-            xshift=120,  # 增加右移距离，确保数字完全移出柱状图
-            xanchor='left'  # 改为左对齐，使数字位于柱子右侧
+            yshift=10,  # 向上移动文字，避免与柱子重叠
+            xshift=130,  # 减小右移距离，使标签紧贴柱状图右侧
+            xanchor='left'  # 左对齐，使标签最左边与柱状图最右边对齐
         )
         
         # 添加下限标签
         fig.add_annotation(
-            x=year,
+            x=x_position,  # 使用索引位置而不是year字符串
             y=lower_values[i],
             text=f'${lower_values[i]:.2f}',
             showarrow=False,
             font=dict(family='DIN', size=21, color='#2CCB7B'),  # 使用与柱子相同的颜色，字体大小缩小一倍
-            yshift=0,
-            xshift=120,  # 增加右移距离，确保数字完全移出柱状图
-            xanchor='left'  # 改为左对齐，使数字位于柱子右侧
+            yshift=10,  # 向上移动文字，避免与柱子重叠
+            xshift=130,  # 减小右移距离，使标签紧贴柱状图右侧
+            xanchor='left'  # 左对齐，使标签最左边与柱状图最右边对齐
         )
     
+    # 设置x轴刻度为年份标签
     fig.update_layout(
         title='前瞻估值分析',
-        xaxis_title='财年',
+        xaxis=dict(
+            title='财年',
+            tickmode='array',
+            tickvals=x_positions,  # 使用数值索引位置
+            ticktext=fiscal_labels  # 使用新的财年标签
+        ),
         yaxis_title='股价 (USD)',
         barmode='overlay',
         height=500,
@@ -383,11 +449,11 @@ def create_valuation_chart(valuation_results):
     return fig
 
 def create_pe_trend_chart(price_data, eps):
-    """创建PE趋势图表"""
+    """创建滚动PE趋势图表"""
     if eps is None or eps <= 0:
         return None
     
-    pe_values = price_data['Close'] / eps
+    pe_values = price_data['Close'] / eps  # 计算滚动PE值
     pe_values = pe_values.dropna()
     
     if pe_values.empty:
@@ -402,12 +468,12 @@ def create_pe_trend_chart(price_data, eps):
     
     fig = go.Figure()
     
-    # 添加PE趋势线
+    # 添加滚动PE趋势线
     fig.add_trace(go.Scatter(
         x=pe_values.index,
         y=pe_values.values,
         mode='lines',
-        name='每日PE',
+        name='每日滚动PE',
         line=dict(color='#4285F4', width=2)
     ))
     
@@ -429,15 +495,15 @@ def create_pe_trend_chart(price_data, eps):
         y=[current_pe],
         mode='markers+text',
         marker=dict(color='#66BED9', size=10),
-        text=f'当前PE: {current_pe:.2f}',
+        text=f'当前滚动PE: {current_pe:.2f}',
         textposition='top center',
-        name='当前PE'
+        name='当前滚动PE'
     ))
     
     fig.update_layout(
-        title='PE趋势分析（过去12个月）',
-        xaxis_title='日期',
-        yaxis_title='PE倍数',
+        title='滚动PE趋势分析（过去12个月）',
+    xaxis_title='日期',
+    yaxis_title='滚动PE倍数',
         height=400,
         width=800,  # 设置固定宽度以与上面的文字保持一致
         xaxis=dict(
@@ -464,7 +530,7 @@ def main():
     st.markdown("<h1 class='main-header'>PE估值计算器</h1>", unsafe_allow_html=True)
     
     # 初始化计算器
-    calculator = PECalculator()
+    calculator = 滚动PECalculator()
     
     # 自动清理过期缓存
     cleaned = calculator.cache_manager.cleanup_cache()
@@ -661,7 +727,7 @@ def main():
     
     with col3:
         current_pe = current_price / eps_ttm
-        st.metric("当前PE", f"{current_pe:.2f}")
+        st.metric("当前滚动PE", f"{current_pe:.2f}")
     
     with col4:
         market_cap = stock_info.get('marketCap', 0)
@@ -673,26 +739,26 @@ def main():
             cap_str = f"${market_cap/1e6:.2f}M"
         st.metric("市值", cap_str)
     
-    # 计算PE区间
+    # 计算滚动PE区间
     pe_stats = calculator.calculate_pe_range(price_data, eps_ttm)
     
     if pe_stats is None:
-        st.error("无法计算PE区间")
+        st.error("无法计算滚动PE区间")
         return
     
-    # PE统计信息
-    st.subheader("📊 PE统计分析")
+    # 滚动PE统计信息
+    st.subheader("📊 滚动PE统计分析")
     
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # PE趋势图
+        # 滚动PE趋势图
         pe_chart = create_pe_trend_chart(price_data, eps_ttm)
         if pe_chart:
             st.plotly_chart(pe_chart, use_container_width=True)
     
     with col2:
-        st.markdown("**PE统计指标**")
+        st.markdown("**滚动PE统计指标**")
         st.write(f"均值: {pe_stats['pe_mean']}")
         st.write(f"中位数: {pe_stats['pe_median']}")
         st.write(f"标准差: {pe_stats['pe_std']}")
@@ -709,29 +775,29 @@ def main():
     with col1:
         
         
-        # 添加PE区间调整说明 - 始终显示
-        st.markdown("### 📝 自定义调整前瞻PE区间")
+        # 添加滚动PE区间调整说明 - 始终显示
+        st.markdown("### 📝 自定义调整前瞻滚动PE区间")
         
         # 简洁显示数据来源提示
-        st.markdown("💡 **行业PE参考:** [Seeking Alpha](https://seekingalpha.com) (推荐)")
+        st.markdown("💡 **行业滚动PE参考:** [Seeking Alpha](https://seekingalpha.com) (推荐)")
         
         # 创建小型下拉框，仅在需要时展开详细说明
-        with st.expander("查看行业PE获取方法", expanded=False):
+        with st.expander("查看行业滚动PE获取方法", expanded=False):
             # 添加行业PE获取说明
             st.markdown("""
-            **Seeking Alpha 行业PE查询方法：**
+            **Seeking Alpha 行业滚动PE查询方法：**
             
             - 网站地址： [Seeking Alpha](https://seekingalpha.com)
             - 获取路径： 
               - 搜索股票代码 → 点击「Valuation」页签
               - 点击「Grade & Metrics」页签
               - 查看「P/E Non-GAAP (FWD)」指标
-              - 页面右侧对比表中有「Sector Median」PE值
+              - 页面右侧对比表中有「Sector Median」滚动PE值
             """)
         
-        pe_lower_adj = st.number_input("PE下限", value=float(pe_stats['pe_lower']), min_value=0.0, step=0.1)
-        pe_upper_adj = st.number_input("PE上限", value=float(pe_stats['pe_upper']), min_value=0.0, step=0.1)
-        pe_median_adj = st.number_input("PE中位值", value=float(pe_stats['pe_median']), min_value=0.0, step=0.1)
+        pe_lower_adj = st.number_input("滚动PE下限", value=float(pe_stats['pe_lower']), min_value=0.0, step=0.1)
+        pe_upper_adj = st.number_input("滚动PE上限", value=float(pe_stats['pe_upper']), min_value=0.0, step=0.1)
+        pe_median_adj = st.number_input("滚动PE中位值", value=float(pe_stats['pe_median']), min_value=0.0, step=0.1)
     
     with col2:
        
@@ -768,14 +834,14 @@ def main():
         
         # 使用实际财年信息作为标签
         if len(fiscal_years) >= 1:
-            eps_fy_current = st.number_input(f"{fiscal_years[0]} EPS (当前财年)", 
+            eps_fy_current = st.number_input("当前财年 EPS", 
                                             value=forward_eps.get(fiscal_years[0]) or 0.0, 
                                             min_value=0.0, step=0.01, format="%.2f")
         else:
             eps_fy_current = st.number_input("当前财年 EPS", value=0.0, min_value=0.0, step=0.01, format="%.2f")
             
         if len(fiscal_years) >= 2:
-            eps_fy_next = st.number_input(f"{fiscal_years[1]} EPS (下一财年)", 
+            eps_fy_next = st.number_input("下一财年 EPS", 
                                         value=forward_eps.get(fiscal_years[1]) or 0.0, 
                                         min_value=0.0, step=0.01, format="%.2f")
         else:
@@ -823,15 +889,27 @@ def main():
         st.subheader("📋 估值详情")
         
         # 创建DataFrame用于显示
+        df_display = pd.DataFrame([]
+        )
+        
+        # 根据结果数量创建适当的标签
+        if len(valuation_results) == 1:
+            fiscal_labels = ["当前财年"]
+        elif len(valuation_results) == 2:
+            fiscal_labels = ["当前财年", "下一财年"]
+        else:
+            fiscal_labels = [f"财年{i+1}" for i in range(len(valuation_results))]
+        
+        # 创建DataFrame用于显示，使用新的财年标签
         df_display = pd.DataFrame([
             {
-                '财年': result['year'],
+                '财年': fiscal_labels[i],
                 '前瞻EPS': result['eps'],
-                'PE区间': result['pe_range'],
+                '滚动PE区间': result['pe_range'],
                 '估值范围': result['valuation_range'],
                 'EPS来源': result['source']
             }
-            for result in valuation_results
+            for i, result in enumerate(valuation_results)
         ])
         
         st.dataframe(df_display, use_container_width=True)
