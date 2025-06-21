@@ -1,9 +1,0 @@
-{
-  "ticker": "AAPL",
-  "data_type": "stock_price",
-  "created_at": "2025-06-14T00:10:59.749051",
-  "last_accessed": "2025-06-14T00:13:14.023499",
-  "kwargs": {
-    "period": "1y"
-  }
-}

@@ -327,7 +327,7 @@ class 滚动PECalculator:
                     'valuation_lower': valuation_lower,
                     'valuation_upper': valuation_upper,
                     'valuation_median': valuation_median,
-                    'valuation_range': f"${valuation_lower:.2f} – ${valuation_upper:.2f}（中位：${valuation_median:.2f}）",
+                    'valuation_range': f"${valuation_lower:.2f} – （中位：{valuation_median:.2f}） – {valuation_upper:.2f}",
                     'source': 'Yahoo Finance 分析师共识'
                 })
         
@@ -362,7 +362,7 @@ def create_valuation_chart(valuation_results):
         y=upper_values,
         name='估值上限',
         marker_color='#F4BB40',  # 修改为橙色
-        opacity=0.7,
+        opacity=1,
         width=0.4  # 减小柱子宽度
     ))
     
@@ -371,7 +371,7 @@ def create_valuation_chart(valuation_results):
         y=lower_values,
         name='估值下限',
         marker_color='#2CCB7B',  # 修改为绿色
-        opacity=0.7,
+        opacity=1,
         width=0.4  # 减小柱子宽度
     ))
     
@@ -398,7 +398,7 @@ def create_valuation_chart(valuation_results):
             text=f'${median_values[i]:.2f}',
             showarrow=False,
             font=dict(family='DIN', size=32, color='white', weight='bold'),  # 增大字体并加粗
-            yshift=25,  # 向上移动文字
+            yshift=40,  # 向上移动文字
             xshift=0
         )
     
@@ -563,6 +563,11 @@ def main():
             del st.session_state.forward_eps
         if 'valuation_results' in st.session_state:
             del st.session_state.valuation_results
+        # 清除EPS输入数据
+        if 'eps_fy_current_input' in st.session_state:
+            del st.session_state.eps_fy_current_input
+        if 'eps_fy_next_input' in st.session_state:
+            del st.session_state.eps_fy_next_input
         # 自动获取新数据
         st.rerun()
     
@@ -768,7 +773,7 @@ def main():
         st.write(f"数据点: {pe_stats['data_points']}")
     
     # 手动调整PE区间
-    st.subheader("⚙️ 调整参数")
+    st.subheader("⚙️ 估值计算")
     
     col1, col2 = st.columns(2)
     
@@ -776,7 +781,7 @@ def main():
         
         
         # 添加滚动PE区间调整说明 - 始终显示
-        st.markdown("### 📝 自定义调整前瞻滚动PE区间")
+        st.markdown("#### 📝 自定义调整前瞻滚动PE区间")
         
         # 简洁显示数据来源提示
         st.markdown("💡 **行业滚动PE参考:** [Seeking Alpha](https://seekingalpha.com) (推荐)")
@@ -787,23 +792,33 @@ def main():
             st.markdown("""
             **Seeking Alpha 行业滚动PE查询方法：**
             
-            - 网站地址： [Seeking Alpha](https://seekingalpha.com)
             - 获取路径： 
               - 搜索股票代码 → 点击「Valuation」页签
               - 点击「Grade & Metrics」页签
-              - 查看「P/E Non-GAAP (FWD)」指标
-              - 页面右侧对比表中有「Sector Median」滚动PE值
+              - 查看「P/E Non-GAAP (TTM)」指标
             """)
         
         pe_lower_adj = st.number_input("滚动PE下限", value=float(pe_stats['pe_lower']), min_value=0.0, step=0.1)
         pe_upper_adj = st.number_input("滚动PE上限", value=float(pe_stats['pe_upper']), min_value=0.0, step=0.1)
-        pe_median_adj = st.number_input("滚动PE中位值", value=float(pe_stats['pe_median']), min_value=0.0, step=0.1)
+        # 使用上限和下限的平均值作为中位数
+        pe_median_default = (pe_lower_adj + pe_upper_adj) / 2
+        pe_median_adj = st.number_input("滚动PE中位值", value=float(pe_median_default), min_value=0.0, step=0.1, help="中位值默认为上限和下限的平均值")
+        
+        # 当PE上限或下限变化时，自动更新中位数
+        if 'last_pe_lower' not in st.session_state or 'last_pe_upper' not in st.session_state:
+            st.session_state.last_pe_lower = pe_lower_adj
+            st.session_state.last_pe_upper = pe_upper_adj
+        elif st.session_state.last_pe_lower != pe_lower_adj or st.session_state.last_pe_upper != pe_upper_adj:
+            st.session_state.last_pe_lower = pe_lower_adj
+            st.session_state.last_pe_upper = pe_upper_adj
+            # 更新中位数并重新加载页面
+            st.rerun()
     
     with col2:
        
         
         # 添加EPS获取说明 - 始终显示
-        st.markdown("### 📝 自定义调整EPS预测数据")
+        st.markdown("#### 📝 自定义调整EPS预测数据")
         
         # 简洁显示数据来源提示
         st.markdown("💡 **数据来源:** [Seeking Alpha](https://seekingalpha.com) (推荐) | [Yahoo Finance](https://finance.yahoo.com) | 公司财报")
@@ -812,9 +827,8 @@ def main():
         with st.expander("查看详细获取方法", expanded=False):
             # 添加数据获取说明
             st.markdown("""
-            **推荐数据来源：**
-            
-             **Seeking Alpha** (推荐)
+           
+             **Seeking Alpha 前瞻EPS查询方法：** 
                - 搜索股票代码 → Earnings → Earnings Estimates
                - 查看"EPS Estimate"表格中的未来年份预测
             
@@ -835,22 +849,28 @@ def main():
         # 使用实际财年信息作为标签
         if len(fiscal_years) >= 1:
             eps_fy_current = st.number_input("当前财年 EPS", 
+                                            key="eps_fy_current_input",
                                             value=forward_eps.get(fiscal_years[0]) or 0.0, 
                                             min_value=0.0, step=0.01, format="%.2f")
         else:
-            eps_fy_current = st.number_input("当前财年 EPS", value=0.0, min_value=0.0, step=0.01, format="%.2f")
+            eps_fy_current = st.number_input("当前财年 EPS", 
+                                           key="eps_fy_current_input",
+                                           value=0.0, min_value=0.0, step=0.01, format="%.2f")
             
         if len(fiscal_years) >= 2:
             eps_fy_next = st.number_input("下一财年 EPS", 
+                                        key="eps_fy_next_input",
                                         value=forward_eps.get(fiscal_years[1]) or 0.0, 
                                         min_value=0.0, step=0.01, format="%.2f")
         else:
-            eps_fy_next = st.number_input("下一财年 EPS", value=0.0, min_value=0.0, step=0.01, format="%.2f")
+            eps_fy_next = st.number_input("下一财年 EPS", 
+                                        key="eps_fy_next_input",
+                                        value=0.0, min_value=0.0, step=0.01, format="%.2f")
             
         # 移除后年财年的输入框
     
     # 重新计算按钮
-    if st.button("🔄 重新计算估值", type="primary"):
+    if st.button("🔄 计算估值", type="primary"):
         # 更新PE区间
         adjusted_pe_range = {
             'pe_lower': pe_lower_adj,
