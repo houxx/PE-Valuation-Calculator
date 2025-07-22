@@ -5,8 +5,9 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
-import requests
-from bs4 import BeautifulSoup
+# 移除爬虫相关导入
+# import requests
+# from bs4 import BeautifulSoup
 import json
 import io
 import base64
@@ -16,18 +17,16 @@ from cache_manager import CacheManager
 warnings.filterwarnings('ignore')
 
 # 初始化API调用计数器
-if 'api_call_count' not in st.session_state:
-    # 不再直接重置为0，而是检查是否需要按日期重置
-    today = datetime.now().date()
-    if 'api_call_date' in st.session_state and st.session_state.api_call_date == today:
-        # 如果是同一天，保持计数器不变
-        pass
-    else:
-        # 如果是新的一天或首次运行，重置计数器
-        st.session_state.api_call_count = 0
-        st.session_state.api_call_date = today
-        st.session_state.rate_limited = False  # 重置速率限制标志
-        st.session_state.using_cached_data = False  # 是否正在使用缓存数据
+today = datetime.now().date()
+
+# 检查是否需要重置计数（新的一天或首次运行）
+if ('api_call_count' not in st.session_state or 
+    'api_call_date' not in st.session_state or 
+    st.session_state.api_call_date != today):
+    # 重置计数器（新的一天或首次运行）
+    st.session_state.api_call_count = 0
+    st.session_state.api_call_date = today
+    st.session_state.using_cached_data = False  # 是否正在使用缓存数据
 
 # API调用计数函数
 def increment_api_call_count():
@@ -36,30 +35,19 @@ def increment_api_call_count():
     if 'api_call_date' not in st.session_state or st.session_state.api_call_date != today:
         st.session_state.api_call_count = 0
         st.session_state.api_call_date = today
-        st.session_state.rate_limited = False  # 重置速率限制标志
     
     # 增加计数
     st.session_state.api_call_count += 1
     
-    # 调整API限制阈值，降低到30次以避免触发yfinance限制
-    if st.session_state.api_call_count >= 50:
-        st.session_state.rate_limited = True
-    
     return st.session_state.api_call_count
 
-# 安全的API调用函数，支持自动回退到缓存
+# 安全的API调用函数
 def safe_api_call(func, *args, **kwargs):
-    """安全的API调用，遇到错误时自动回退到缓存数据"""
+    """安全的API调用"""
     try:
         return func(*args, **kwargs)
     except Exception as e:
-        error_msg = str(e).lower()
-        if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
-            st.session_state.rate_limited = True
-            st.session_state.using_cached_data = True
-            raise e
-        else:
-            raise e
+        raise e
 
 # 页面配置
 st.set_page_config(
@@ -113,17 +101,6 @@ class 滚动PECalculator:
         
         # 尝试获取新数据
         try:
-            # 检查是否已达到API调用限制
-            if 'rate_limited' in st.session_state and st.session_state.rate_limited:
-                # 尝试使用过期的缓存数据
-                cached_data = self.cache_manager.load_cache(ticker, 'stock_data', allow_expired=True)
-                if cached_data:
-                    st.session_state.using_cached_data = True
-                    return cached_data
-                else:
-                    st.error("已达到API调用限制且无可用缓存数据")
-                    return None, None
-                
             stock = yf.Ticker(ticker)
             increment_api_call_count()  # 增加API调用计数
             stock_data = safe_api_call(stock.history, period="1y")
@@ -133,23 +110,14 @@ class 滚动PECalculator:
             
             return stock_data, None
         except Exception as e:
-            # 如果错误信息包含速率限制相关内容，设置速率限制标志
-            error_msg = str(e).lower()
-            if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
-                st.session_state.rate_limited = True
-                st.session_state.using_cached_data = True
-                
-                # 尝试使用过期的缓存数据
-                cached_data = self.cache_manager.load_cache(ticker, 'stock_data', allow_expired=True)
-                if cached_data:
-                    st.warning(f"API调用受限，正在使用缓存数据")
-                    return cached_data
-                else:
-                    st.error("API调用受限且无可用缓存数据")
-                    return None, None
-            
-            st.error(f"获取股票数据失败: {e}")
-            return None, None
+            # 尝试使用过期的缓存数据
+            cached_data = self.cache_manager.load_cache(ticker, 'stock_data', allow_expired=True)
+            if cached_data:
+                st.warning(f"API调用失败，正在使用缓存数据")
+                return cached_data
+            else:
+                st.error(f"获取股票数据失败: {e}")
+                return None, None
     
     def get_eps_ttm(self, ticker, force_refresh=False):
         """获取TTM EPS数据，支持缓存回退"""
@@ -162,17 +130,6 @@ class 滚动PECalculator:
         
         # 尝试获取新数据
         try:
-            # 检查是否已达到API调用限制
-            if 'rate_limited' in st.session_state and st.session_state.rate_limited:
-                # 尝试使用过期的缓存数据
-                cached_data = self.cache_manager.load_cache(ticker, 'eps_ttm', allow_expired=True)
-                if cached_data:
-                    st.session_state.using_cached_data = True
-                    return cached_data
-                else:
-                    st.error("已达到API调用限制且无可用缓存数据")
-                    return None, None
-                
             stock = yf.Ticker(ticker)
             increment_api_call_count()  # 增加API调用计数
             info = stock.info  # stock.info是属性，不是方法，不需要通过safe_api_call调用
@@ -183,23 +140,14 @@ class 滚动PECalculator:
             
             return eps_ttm, None
         except Exception as e:
-            # 如果错误信息包含速率限制相关内容，设置速率限制标志
-            error_msg = str(e).lower()
-            if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
-                st.session_state.rate_limited = True
-                st.session_state.using_cached_data = True
-                
-                # 尝试使用过期的缓存数据
-                cached_data = self.cache_manager.load_cache(ticker, 'eps_ttm', allow_expired=True)
-                if cached_data:
-                    st.warning(f"API调用受限，正在使用缓存数据")
-                    return cached_data
-                else:
-                    st.error("API调用受限且无可用缓存数据")
-                    return None, None
-            
-            st.error(f"获取EPS数据失败: {e}")
-            return None, None
+            # 尝试使用过期的缓存数据
+            cached_data = self.cache_manager.load_cache(ticker, 'eps_ttm', allow_expired=True)
+            if cached_data:
+                st.warning(f"API调用失败，正在使用缓存数据")
+                return cached_data
+            else:
+                st.error(f"获取EPS数据失败: {e}")
+                return None, None
     
     def calculate_pe_range(self, price_data, eps):
         """计算滚动PE区间"""
@@ -234,11 +182,7 @@ class 滚动PECalculator:
             'data_points': len(pe_values)
         }
     
-    def get_eps_from_seeking_alpha(self, ticker):
-        """从Seeking Alpha获取EPS估算数据 - 已移除自动抓取功能"""
-        # 移除了Seeking Alpha自动抓取功能，改为手动输入提示
-        st.info("💡 提示：由于网站反爬虫限制，请手动输入EPS预测数据")
-        return {}
+    # 已移除爬虫相关函数 get_eps_from_seeking_alpha
     
     def get_forward_eps_estimates(self, ticker, force_refresh=False):
         """获取前瞻EPS估计，支持缓存回退"""
@@ -257,19 +201,11 @@ class 滚动PECalculator:
                     info, metadata = cached_info
                 else:
                     # 尝试获取新的股票信息
-                    if 'rate_limited' in st.session_state and st.session_state.rate_limited:
-                        cached_info = self.cache_manager.load_cache(ticker, 'stock_info', allow_expired=True)
-                        if cached_info:
-                            info, metadata = cached_info
-                            st.session_state.using_cached_data = True
-                        else:
-                            raise Exception("API调用受限且无可用缓存数据")
-                    else:
-                        stock = yf.Ticker(ticker)
-                        increment_api_call_count()  # 增加API调用计数
-                        info = stock.info  # stock.info是属性，不是方法
-                        # 保存到缓存
-                        self.cache_manager.save_cache(ticker, 'stock_info', info)
+                    stock = yf.Ticker(ticker)
+                    increment_api_call_count()  # 增加API调用计数
+                    info = stock.info  # stock.info是属性，不是方法
+                    # 保存到缓存
+                    self.cache_manager.save_cache(ticker, 'stock_info', info)
             else:
                 # 强制刷新
                 stock = yf.Ticker(ticker)
@@ -353,16 +289,11 @@ class 滚动PECalculator:
             return forward_eps, None
             
         except Exception as e:
-            error_msg = str(e).lower()
-            if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
-                st.session_state.rate_limited = True
-                st.session_state.using_cached_data = True
-                
-                # 尝试使用过期的缓存数据
-                cached_data = self.cache_manager.load_cache(ticker, 'forward_eps', allow_expired=True)
-                if cached_data:
-                    st.warning(f"API调用受限，正在使用缓存数据")
-                    return cached_data
+            # 尝试使用过期的缓存数据
+            cached_data = self.cache_manager.load_cache(ticker, 'forward_eps', allow_expired=True)
+            if cached_data:
+                st.warning(f"API调用失败，正在使用缓存数据")
+                return cached_data
             
             print(f"获取前瞻EPS估计时出错: {e}")
             # 返回空字典 - 只包含当前财年和下一财年
@@ -595,12 +526,9 @@ def create_pe_trend_chart(price_data, eps, cache_warning=""):
     return fig
 
 def main():
-    # 在右上角显示API调用计数和速率限制状态
-    rate_limited_status = "⚠️ 已限制" if 'rate_limited' in st.session_state and st.session_state.rate_limited else ""
-    rate_limited_color = "color: red;" if 'rate_limited' in st.session_state and st.session_state.rate_limited else ""
-    
+    # 在右上角显示API调用计数
     st.markdown(
-        f"<div style='position: absolute; top: 0.5rem; right: 1rem; z-index: 1000; font-size: 0.8rem; {rate_limited_color}'>API调用次数: {st.session_state.api_call_count}/50 {rate_limited_status}</div>",
+        f"<div style='position: absolute; top: 0.5rem; right: 1rem; z-index: 1000; font-size: 0.8rem;'>API调用次数: {st.session_state.api_call_count}</div>",
         unsafe_allow_html=True
     )
     
@@ -619,10 +547,7 @@ def main():
     
     # 显示API调用状态
     if 'api_call_count' in st.session_state:
-        if st.session_state.rate_limited:
-            st.sidebar.error(f"⚠️ API调用已达限制 ({st.session_state.api_call_count}/50)")
-        else:
-            st.sidebar.info(f"📡 今日API调用: {st.session_state.api_call_count}/50")
+        st.sidebar.info(f"📡 今日API调用: {st.session_state.api_call_count}")
     
     # 缓存状态显示
     st.sidebar.subheader("💾 缓存状态")
@@ -720,22 +645,13 @@ def main():
         st.sidebar.success(f"已清理 {cleaned} 个缓存文件")
         st.rerun()
         
-    # 速率限制管理
+    # API调用状态
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🚦 API限制管理")
+    st.sidebar.subheader("📊 API调用状态")
     
     # 显示当前API调用状态
-    rate_limited = 'rate_limited' in st.session_state and st.session_state.rate_limited
-    status_color = "🔴" if rate_limited else "🟢"
-    status_text = "已限制" if rate_limited else "正常"
-    st.sidebar.write(f"API状态: {status_color} {status_text}")
+    st.sidebar.write(f"API状态: 🟢 正常")
     st.sidebar.write(f"今日调用次数: {st.session_state.api_call_count}")
-    
-    # 重置API限制按钮
-    if rate_limited and st.sidebar.button("🔄 重置API限制"):
-        st.session_state.rate_limited = False
-        st.sidebar.success("已重置API限制状态")
-        st.rerun()
     
     # 获取数据按钮
     if st.sidebar.button("🔄 获取数据", type="primary"):
@@ -756,10 +672,7 @@ def main():
                 if cached_info and not force_refresh:
                     stock_info = cached_info[0]
                 else:
-                    # 检查是否已达到API调用限制
-                    if 'rate_limited' in st.session_state and st.session_state.rate_limited:
-                        st.error("已达到API调用限制，请稍后再试或使用缓存数据")
-                        return
+                    # 获取股票信息
                         
                     stock = yf.Ticker(ticker.upper())
                     increment_api_call_count()  # 增加API调用计数
@@ -807,10 +720,7 @@ def main():
                 if cached_info and not force_refresh:
                     stock_info = cached_info[0]
                 else:
-                    # 检查是否已达到API调用限制
-                    if 'rate_limited' in st.session_state and st.session_state.rate_limited:
-                        st.error("已达到API调用限制，请稍后再试或使用缓存数据")
-                        return
+                    # 获取股票信息
                         
                     stock = yf.Ticker(ticker.upper())
                     increment_api_call_count()  # 增加API调用计数
@@ -995,10 +905,18 @@ def main():
         
         # 检查是否需要获取前瞻EPS数据
         if 'forward_eps' not in st.session_state or force_refresh:
-            forward_eps = calculator.get_forward_eps_estimates(ticker, force_refresh=force_refresh)
+            forward_eps_result = calculator.get_forward_eps_estimates(ticker, force_refresh=force_refresh)
+            if isinstance(forward_eps_result, tuple):
+                forward_eps, metadata = forward_eps_result
+            else:
+                forward_eps = forward_eps_result
             st.session_state.forward_eps = forward_eps
         else:
             forward_eps = st.session_state.forward_eps
+        
+        # 确保forward_eps是字典类型
+        if not isinstance(forward_eps, dict):
+            forward_eps = {}
         
         # 获取财年键列表
         fiscal_years = list(forward_eps.keys())

@@ -3,6 +3,7 @@ yfinance>=0.2.18
 pandas>=1.5.0
 numpy>=1.24.0
 plotly>=5.15.0
-requests>=2.31.0
-beautifulsoup4>=4.12.0
+# 移除爬虫相关依赖
+# requests>=2.31.0
+# beautifulsoup4>=4.12.0
 html5lib>=1.1
