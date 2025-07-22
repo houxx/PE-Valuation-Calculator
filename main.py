@@ -27,6 +27,7 @@ if 'api_call_count' not in st.session_state:
         st.session_state.api_call_count = 0
         st.session_state.api_call_date = today
         st.session_state.rate_limited = False  # 重置速率限制标志
+        st.session_state.using_cached_data = False  # 是否正在使用缓存数据
 
 # API调用计数函数
 def increment_api_call_count():
@@ -40,11 +41,25 @@ def increment_api_call_count():
     # 增加计数
     st.session_state.api_call_count += 1
     
-    # 检查是否达到速率限制（例如，每天超过50次调用）
-    if st.session_state.api_call_count > 50:
+    # 调整API限制阈值，降低到30次以避免触发yfinance限制
+    if st.session_state.api_call_count >= 50:
         st.session_state.rate_limited = True
     
     return st.session_state.api_call_count
+
+# 安全的API调用函数，支持自动回退到缓存
+def safe_api_call(func, *args, **kwargs):
+    """安全的API调用，遇到错误时自动回退到缓存数据"""
+    try:
+        return func(*args, **kwargs)
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
+            st.session_state.rate_limited = True
+            st.session_state.using_cached_data = True
+            raise e
+        else:
+            raise e
 
 # 页面配置
 st.set_page_config(
@@ -88,73 +103,103 @@ class 滚动PECalculator:
         self.cache_manager = CacheManager()
         
     def get_stock_data(self, ticker, force_refresh=False):
-        """获取股票历史数据"""
-        # 检查缓存
+        """获取股票历史数据，支持缓存回退"""
+        # 优先检查缓存（不强制刷新时）
         if not force_refresh:
-            cached_data = self.cache_manager.load_cache(ticker, 'stock_data')
+            cached_data = self.cache_manager.load_cache(ticker, 'stock_data', allow_expired=False)
             if cached_data:
-                stock_data = cached_data[0]
-                update_time = self.cache_manager.get_data_update_time(ticker, 'stock_data')
-                return stock_data
+                stock_data, metadata = cached_data
+                return stock_data, metadata
         
-        # 获取股票数据
+        # 尝试获取新数据
         try:
             # 检查是否已达到API调用限制
             if 'rate_limited' in st.session_state and st.session_state.rate_limited:
-                st.error("已达到API调用限制，请稍后再试或使用缓存数据")
-                return None
+                # 尝试使用过期的缓存数据
+                cached_data = self.cache_manager.load_cache(ticker, 'stock_data', allow_expired=True)
+                if cached_data:
+                    st.session_state.using_cached_data = True
+                    return cached_data
+                else:
+                    st.error("已达到API调用限制且无可用缓存数据")
+                    return None, None
                 
             stock = yf.Ticker(ticker)
             increment_api_call_count()  # 增加API调用计数
-            stock_data = stock.history(period="1y")
+            stock_data = safe_api_call(stock.history, period="1y")
             
             # 保存到缓存
             self.cache_manager.save_cache(ticker, 'stock_data', stock_data)
             
-            return stock_data
+            return stock_data, None
         except Exception as e:
             # 如果错误信息包含速率限制相关内容，设置速率限制标志
             error_msg = str(e).lower()
-            if "rate limit" in error_msg or "too many requests" in error_msg:
+            if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
                 st.session_state.rate_limited = True
+                st.session_state.using_cached_data = True
+                
+                # 尝试使用过期的缓存数据
+                cached_data = self.cache_manager.load_cache(ticker, 'stock_data', allow_expired=True)
+                if cached_data:
+                    st.warning(f"API调用受限，正在使用缓存数据")
+                    return cached_data
+                else:
+                    st.error("API调用受限且无可用缓存数据")
+                    return None, None
             
             st.error(f"获取股票数据失败: {e}")
-            return None
+            return None, None
     
     def get_eps_ttm(self, ticker, force_refresh=False):
-        """获取TTM EPS数据"""
-        # 检查缓存
+        """获取TTM EPS数据，支持缓存回退"""
+        # 优先检查缓存（不强制刷新时）
         if not force_refresh:
-            cached_data = self.cache_manager.load_cache(ticker, 'eps_ttm')
+            cached_data = self.cache_manager.load_cache(ticker, 'eps_ttm', allow_expired=False)
             if cached_data:
-                eps_ttm = cached_data[0]
-                update_time = self.cache_manager.get_data_update_time(ticker, 'eps_ttm')
-                return eps_ttm
+                eps_ttm, metadata = cached_data
+                return eps_ttm, metadata
         
-        # 获取EPS数据
+        # 尝试获取新数据
         try:
             # 检查是否已达到API调用限制
             if 'rate_limited' in st.session_state and st.session_state.rate_limited:
-                st.error("已达到API调用限制，请稍后再试或使用缓存数据")
-                return None
+                # 尝试使用过期的缓存数据
+                cached_data = self.cache_manager.load_cache(ticker, 'eps_ttm', allow_expired=True)
+                if cached_data:
+                    st.session_state.using_cached_data = True
+                    return cached_data
+                else:
+                    st.error("已达到API调用限制且无可用缓存数据")
+                    return None, None
                 
             stock = yf.Ticker(ticker)
             increment_api_call_count()  # 增加API调用计数
-            info = stock.info
+            info = stock.info  # stock.info是属性，不是方法，不需要通过safe_api_call调用
             eps_ttm = info.get('trailingEps', None)
             
             # 保存到缓存
             self.cache_manager.save_cache(ticker, 'eps_ttm', eps_ttm)
             
-            return eps_ttm
+            return eps_ttm, None
         except Exception as e:
             # 如果错误信息包含速率限制相关内容，设置速率限制标志
             error_msg = str(e).lower()
-            if "rate limit" in error_msg or "too many requests" in error_msg:
+            if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
                 st.session_state.rate_limited = True
+                st.session_state.using_cached_data = True
+                
+                # 尝试使用过期的缓存数据
+                cached_data = self.cache_manager.load_cache(ticker, 'eps_ttm', allow_expired=True)
+                if cached_data:
+                    st.warning(f"API调用受限，正在使用缓存数据")
+                    return cached_data
+                else:
+                    st.error("API调用受限且无可用缓存数据")
+                    return None, None
             
             st.error(f"获取EPS数据失败: {e}")
-            return None
+            return None, None
     
     def calculate_pe_range(self, price_data, eps):
         """计算滚动PE区间"""
@@ -196,24 +241,40 @@ class 滚动PECalculator:
         return {}
     
     def get_forward_eps_estimates(self, ticker, force_refresh=False):
-        """获取前瞻EPS估计"""
-        # 检查缓存
+        """获取前瞻EPS估计，支持缓存回退"""
+        # 优先检查缓存（不强制刷新时）
         if not force_refresh:
-            cached_data = self.cache_manager.load_cache(ticker, 'forward_eps')
+            cached_data = self.cache_manager.load_cache(ticker, 'forward_eps', allow_expired=False)
             if cached_data:
-                forward_eps = cached_data[0]
-                return forward_eps
+                forward_eps, metadata = cached_data
+                return forward_eps, metadata
         
         try:
             # 检查缓存中是否有股票信息
-            cached_info = self.cache_manager.load_cache(ticker, 'stock_info')
-            if cached_info and not force_refresh:
-                info = cached_info[0]
+            if not force_refresh:
+                cached_info = self.cache_manager.load_cache(ticker, 'stock_info', allow_expired=False)
+                if cached_info:
+                    info, metadata = cached_info
+                else:
+                    # 尝试获取新的股票信息
+                    if 'rate_limited' in st.session_state and st.session_state.rate_limited:
+                        cached_info = self.cache_manager.load_cache(ticker, 'stock_info', allow_expired=True)
+                        if cached_info:
+                            info, metadata = cached_info
+                            st.session_state.using_cached_data = True
+                        else:
+                            raise Exception("API调用受限且无可用缓存数据")
+                    else:
+                        stock = yf.Ticker(ticker)
+                        increment_api_call_count()  # 增加API调用计数
+                        info = stock.info  # stock.info是属性，不是方法
+                        # 保存到缓存
+                        self.cache_manager.save_cache(ticker, 'stock_info', info)
             else:
-                # 获取股票信息
+                # 强制刷新
                 stock = yf.Ticker(ticker)
                 increment_api_call_count()  # 增加API调用计数
-                info = stock.info
+                info = stock.info  # stock.info是属性，不是方法
                 # 保存到缓存
                 self.cache_manager.save_cache(ticker, 'stock_info', info)
             
@@ -289,9 +350,20 @@ class 滚动PECalculator:
             
             # 缓存结果
             self.cache_manager.save_cache(ticker, 'forward_eps', forward_eps)
-            return forward_eps
+            return forward_eps, None
             
         except Exception as e:
+            error_msg = str(e).lower()
+            if "rate limit" in error_msg or "too many requests" in error_msg or "429" in error_msg:
+                st.session_state.rate_limited = True
+                st.session_state.using_cached_data = True
+                
+                # 尝试使用过期的缓存数据
+                cached_data = self.cache_manager.load_cache(ticker, 'forward_eps', allow_expired=True)
+                if cached_data:
+                    st.warning(f"API调用受限，正在使用缓存数据")
+                    return cached_data
+            
             print(f"获取前瞻EPS估计时出错: {e}")
             # 返回空字典 - 只包含当前财年和下一财年
             current_year = datetime.now().year
@@ -301,7 +373,7 @@ class 滚动PECalculator:
             }
             # 即使出错也保存到缓存，避免重复查询
             self.cache_manager.save_cache(ticker, 'forward_eps', forward_eps)
-            return forward_eps
+            return forward_eps, None
     
     def calculate_valuation(self, forward_eps, pe_range):
         """计算前瞻估值"""
@@ -448,7 +520,7 @@ def create_valuation_chart(valuation_results):
     
     return fig
 
-def create_pe_trend_chart(price_data, eps):
+def create_pe_trend_chart(price_data, eps, cache_warning=""):
     """创建滚动PE趋势图表"""
     if eps is None or eps <= 0:
         return None
@@ -500,8 +572,13 @@ def create_pe_trend_chart(price_data, eps):
         name='当前滚动PE'
     ))
     
+    # 添加缓存数据提示到图表标题
+    chart_title = '滚动PE趋势分析（过去12个月）'
+    if cache_warning:
+        chart_title += cache_warning
+    
     fig.update_layout(
-        title='滚动PE趋势分析（过去12个月）',
+        title=chart_title,
     xaxis_title='日期',
     yaxis_title='滚动PE倍数',
         height=400,
@@ -523,7 +600,7 @@ def main():
     rate_limited_color = "color: red;" if 'rate_limited' in st.session_state and st.session_state.rate_limited else ""
     
     st.markdown(
-        f"<div style='position: absolute; top: 0.5rem; right: 1rem; z-index: 1000; font-size: 0.8rem; {rate_limited_color}'>API调用次数: {st.session_state.api_call_count} {rate_limited_status}</div>",
+        f"<div style='position: absolute; top: 0.5rem; right: 1rem; z-index: 1000; font-size: 0.8rem; {rate_limited_color}'>API调用次数: {st.session_state.api_call_count}/50 {rate_limited_status}</div>",
         unsafe_allow_html=True
     )
     
@@ -539,6 +616,54 @@ def main():
     
     # 侧边栏设置
     st.sidebar.title("⚙️ 设置")
+    
+    # 显示API调用状态
+    if 'api_call_count' in st.session_state:
+        if st.session_state.rate_limited:
+            st.sidebar.error(f"⚠️ API调用已达限制 ({st.session_state.api_call_count}/50)")
+        else:
+            st.sidebar.info(f"📡 今日API调用: {st.session_state.api_call_count}/50")
+    
+    # 缓存状态显示
+    st.sidebar.subheader("💾 缓存状态")
+    if 'using_cached_data' in st.session_state and st.session_state.using_cached_data:
+        st.sidebar.warning("🔄 当前使用缓存数据")
+    else:
+        st.sidebar.success("🌐 当前使用实时数据")
+    
+    # 如果有股票代码，显示该股票的缓存状态
+    if 'ticker' in st.session_state and st.session_state.ticker:
+        cache_status = calculator.cache_manager.get_cache_status_summary(st.session_state.ticker)
+        if cache_status and 'data_status' in cache_status:
+            st.sidebar.write("**当前股票缓存状态:**")
+            data_type_names = {
+                'stock_data': '股价数据',
+                'eps_ttm': 'EPS数据', 
+                'forward_eps': '前瞻EPS',
+                'stock_info': '股票信息'
+            }
+            for data_type, status in cache_status['data_status'].items():
+                display_name = data_type_names.get(data_type, data_type)
+                if status and status.get('update_time'):
+                    if status.get('is_expired', True):
+                        # 计算缓存天数
+                        try:
+                            from datetime import datetime
+                            update_time = datetime.strptime(status['update_time'], '%Y-%m-%d %H:%M:%S')
+                            days_old = (datetime.now() - update_time).days
+                            st.sidebar.write(f"📄 {display_name}: 已过期 ({days_old}天前)")
+                        except:
+                            st.sidebar.write(f"📄 {display_name}: 已过期")
+                    else:
+                        try:
+                            from datetime import datetime
+                            update_time = datetime.strptime(status['update_time'], '%Y-%m-%d %H:%M:%S')
+                            days_old = (datetime.now() - update_time).days
+                            st.sidebar.write(f"✅ {display_name}: 有效 ({days_old}天前)")
+                        except:
+                            st.sidebar.write(f"✅ {display_name}: 有效")
+                else:
+                    st.sidebar.write(f"❌ {display_name}: 无缓存")
     
     # 检查session_state中是否已有股票代码
     if 'current_ticker' not in st.session_state:
@@ -577,7 +702,7 @@ def main():
     
     # 缓存管理
     st.sidebar.markdown("---")
-    st.sidebar.subheader("💾 缓存管理 (手动模式)")
+    st.sidebar.subheader("🗂️ 缓存管理")
     
     # 显示缓存统计
     cache_stats = calculator.cache_manager.get_cache_stats()
@@ -614,13 +739,15 @@ def main():
     
     # 获取数据按钮
     if st.sidebar.button("🔄 获取数据", type="primary"):
+        st.session_state.using_cached_data = False  # 重置缓存使用状态
         with st.spinner(""):
             # 获取股票数据
-            stock_data = calculator.get_stock_data(ticker.upper(), force_refresh=force_refresh)
+            stock_data_result = calculator.get_stock_data(ticker.upper(), force_refresh=force_refresh)
             
-            if stock_data is None:
+            if stock_data_result[0] is None:
                 st.error("无法获取股票数据，请检查股票代码")
                 return
+            stock_data, stock_metadata = stock_data_result
             
             # 获取股票信息
             try:
@@ -645,28 +772,33 @@ def main():
                 return
             
             # 获取EPS数据
-            eps_ttm = calculator.get_eps_ttm(ticker.upper(), force_refresh=force_refresh)
+            eps_result = calculator.get_eps_ttm(ticker.upper(), force_refresh=force_refresh)
             
-            if eps_ttm is None or eps_ttm <= 0:
+            if eps_result[0] is None or eps_result[0] <= 0:
                 st.error("无法获取有效的EPS数据")
                 return
+            eps_ttm, eps_metadata = eps_result
             
             # 存储到session state
             st.session_state.price_data = stock_data
             st.session_state.stock_info = stock_info
             st.session_state.eps_ttm = eps_ttm
             st.session_state.ticker = ticker.upper()
+            st.session_state.stock_metadata = stock_metadata
+            st.session_state.eps_metadata = eps_metadata
     
     # 检查是否有数据
     if 'price_data' not in st.session_state:
         # 自动获取数据
+        st.session_state.using_cached_data = False  # 重置缓存使用状态
         with st.spinner("正在获取数据..."):
             # 获取股票数据
-            stock_data = calculator.get_stock_data(ticker.upper(), force_refresh=force_refresh)
+            stock_data_result = calculator.get_stock_data(ticker.upper(), force_refresh=force_refresh)
             
-            if stock_data is None:
+            if stock_data_result[0] is None:
                 st.error("无法获取股票数据，请检查股票代码")
                 return
+            stock_data, stock_metadata = stock_data_result
             
             # 获取股票信息
             try:
@@ -691,14 +823,16 @@ def main():
                 return
             
             # 获取EPS数据
-            eps_ttm = calculator.get_eps_ttm(ticker.upper(), force_refresh=force_refresh)
+            eps_result = calculator.get_eps_ttm(ticker.upper(), force_refresh=force_refresh)
             
-            if eps_ttm is None or eps_ttm <= 0:
+            if eps_result[0] is None or eps_result[0] <= 0:
                 st.error("无法获取有效的EPS数据")
                 return
+            eps_ttm, eps_metadata = eps_result
             
             # 获取前瞻EPS数据
-            forward_eps = calculator.get_forward_eps_estimates(ticker, force_refresh=force_refresh)
+            forward_eps_result = calculator.get_forward_eps_estimates(ticker, force_refresh=force_refresh)
+            forward_eps, forward_eps_metadata = forward_eps_result
             
             # 存储到session state
             st.session_state.price_data = stock_data
@@ -706,6 +840,9 @@ def main():
             st.session_state.eps_ttm = eps_ttm
             st.session_state.forward_eps = forward_eps
             st.session_state.ticker = ticker.upper()
+            st.session_state.stock_metadata = stock_metadata
+            st.session_state.eps_metadata = eps_metadata
+            st.session_state.forward_eps_metadata = forward_eps_metadata
     
     price_data = st.session_state.price_data
     stock_info = st.session_state.stock_info
@@ -752,13 +889,34 @@ def main():
         return
     
     # 滚动PE统计信息
-    st.subheader("📊 滚动PE统计分析")
+    # 检查是否使用了缓存数据并添加提示
+    cache_warning = ""
+    if ('using_cached_data' in st.session_state and st.session_state.using_cached_data) or \
+       (st.session_state.get('stock_metadata') and st.session_state.stock_metadata.get('is_expired')) or \
+       (st.session_state.get('eps_metadata') and st.session_state.eps_metadata.get('is_expired')):
+        # 获取最旧的数据时间作为提示
+        oldest_date = None
+        if st.session_state.get('stock_metadata') and st.session_state.stock_metadata.get('last_updated'):
+            oldest_date = st.session_state.stock_metadata['last_updated']
+        if st.session_state.get('eps_metadata') and st.session_state.eps_metadata.get('last_updated'):
+            eps_date = st.session_state.eps_metadata['last_updated']
+            if oldest_date is None or eps_date < oldest_date:
+                oldest_date = eps_date
+        
+        if oldest_date:
+            from datetime import datetime
+            if isinstance(oldest_date, str):
+                oldest_date = datetime.fromisoformat(oldest_date.replace('Z', '+00:00'))
+            days_old = (datetime.now(oldest_date.tzinfo) - oldest_date).days
+            cache_warning = f" ⚠️ (使用{days_old}天前的缓存数据)"
+    
+    st.subheader(f"📊 滚动PE统计分析{cache_warning}")
     
     col1, col2 = st.columns([2, 1])
     
     with col1:
         # 滚动PE趋势图
-        pe_chart = create_pe_trend_chart(price_data, eps_ttm)
+        pe_chart = create_pe_trend_chart(price_data, eps_ttm, cache_warning)
         if pe_chart:
             st.plotly_chart(pe_chart, use_container_width=True)
     
